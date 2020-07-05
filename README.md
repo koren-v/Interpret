@@ -8,3 +8,4 @@ This repository based on the [Allen NLP Interpret Module](https://github.com/all
 * The example of usege in the [notebook](https://nbviewer.jupyter.org/github/koren-v/Interpret/blob/master/usage_example.ipynb).
 
 ### The example of the output:
+![](https://miro.medium.com/max/1056/1*w0f8xVbGBZHF7U04OINrVw.png)
