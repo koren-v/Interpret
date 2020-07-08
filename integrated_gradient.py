@@ -1,6 +1,8 @@
 import math
 import numpy as np
 
+import torch
+
 from saliency_interpreter import SaliencyInterpreter
 
 
@@ -16,8 +18,9 @@ class IntegratedGradient(SaliencyInterpreter):
         predictions = self._get_prediction(test_dataset)
 
         instances_with_grads = dict()
-        for idx, (label, inp, tokens) in enumerate(zip(*predictions)):
+        for idx, (prob, inp, tokens) in enumerate(zip(*predictions)):
             # Run smoothgrad
+            label = torch.argmax(prob, axis=0)
             grads = self._integrate_gradients(label, inp)
 
             # Normalize results
