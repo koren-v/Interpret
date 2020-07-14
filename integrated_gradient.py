@@ -1,5 +1,5 @@
-import math
 import numpy as np
+from tqdm import tqdm
 
 import torch
 
@@ -12,30 +12,38 @@ class IntegratedGradient(SaliencyInterpreter):
     Registered as a `SaliencyInterpreter` with name "integrated-gradient".
     """
 
-    def saliency_interpret(self, test_dataset):
+    def saliency_interpret(self, test_dataloader):
 
         # Convert inputs to labeled instances
-        predictions = self._get_prediction(test_dataset)
+        predictions = self._get_prediction(test_dataloader)
 
-        instances_with_grads = dict()
-        for idx, (prob, inp, tokens) in enumerate(zip(*predictions)):
-            # Run smoothgrad
-            label = torch.argmax(prob, axis=0)
-            grads = self._integrate_gradients(label, inp)
+        instances_with_grads = []
 
-            # Normalize results
-            for key, grad in grads.items():
-                # TODO (@Eric-Wallace), SmoothGrad is not using times input normalization.
-                # Fine for now, but should fix for consistency.
+        iterator = tqdm(zip(*predictions), total=len(predictions[0]))\
+            if self.show_progress else zip(*predictions)
 
-                # The [0] here is undo-ing the batching that happens in get_gradients.
-                embedding_grad = np.sum(grad[0], axis=1)
-                norm = np.linalg.norm(embedding_grad, ord=1)
-                normalized_grad = [math.fabs(e) / norm for e in embedding_grad]
-                grads[key] = normalized_grad
+        for probs, inputs, tokens in iterator:
 
-            instances_with_grads["instance_" + str(idx + 1)] = grads
-            instances_with_grads["instance_" + str(idx + 1)]['tokens_input_1'] = [t[0] for t in tokens]
+            labels = torch.argmax(probs, dim=1)
+            grads = self._integrate_gradients(labels, inputs)
+
+            # sum by embeddings (scalar for each token)
+            embedding_grads = grads.sum(dim=2)
+            # norm for each sequence
+            norms = torch.norm(embedding_grads, dim=1, p=1)
+            # normalizing
+            for i, norm in enumerate(norms):
+                embedding_grads[i] = torch.abs(embedding_grads[i]) / norm
+
+            for i, embedding_grad in enumerate(embedding_grads):
+                example_dict = dict()
+                # as we do it by batches we has a padding so we need to remove it
+                example_tokens = [t for t in tokens[i] if t != '[PAD]']
+                example_dict['tokens'] = example_tokens
+                example_dict['grad'] = embedding_grad.cpu().tolist()[:len(example_tokens)]
+                example_dict['label'] = labels[i].item()
+                example_dict['prob'] = probs[i].max().item()
+                instances_with_grads.append(example_dict)
 
         return instances_with_grads
 
@@ -50,7 +58,7 @@ class IntegratedGradient(SaliencyInterpreter):
         def forward_hook(module, inputs, output):
             # Save the input for later use. Only do so on first call.
             if alpha == 0:
-                embeddings_list.append(output.squeeze(0).clone().detach().numpy())
+                embeddings_list.append(output.squeeze(0).clone().detach())
 
             # Scale the embedding by alpha
             output.mul_(alpha)
@@ -62,7 +70,7 @@ class IntegratedGradient(SaliencyInterpreter):
 
     def _integrate_gradients(self, label, inp):
 
-        ig_grads = {}
+        ig_grads = None
 
         # List of Embedding inputs
         embeddings_list = []
@@ -79,22 +87,18 @@ class IntegratedGradient(SaliencyInterpreter):
             handle.remove()
 
             # Running sum of gradients
-            if ig_grads == {}:
+            if ig_grads is None:
                 ig_grads = grads
             else:
-                for key in grads.keys():
-                    ig_grads[key] += grads[key]
+                ig_grads = ig_grads + grads
 
         # Average of each gradient term
-        for key in ig_grads.keys():
-            ig_grads[key] /= steps
+        ig_grads /= steps
 
         # Gradients come back in the reverse order that they were sent into the network
         embeddings_list.reverse()
 
         # Element-wise multiply average gradient by the input
-        for idx, input_embedding in enumerate(embeddings_list):
-            key = "grad_input_" + str(idx + 1)
-            ig_grads[key] *= input_embedding
+        ig_grads *= embeddings_list[0]
 
         return ig_grads

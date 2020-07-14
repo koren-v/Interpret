@@ -1,6 +1,6 @@
-import math
-import numpy as np
 import torch
+
+from tqdm import tqdm
 
 from saliency_interpreter import SaliencyInterpreter
 
@@ -13,39 +13,48 @@ class SmoothGradient(SaliencyInterpreter):
     def __init__(self,
                  model,
                  criterion,
+                 tokenizer,
+                 show_progress=True,
                  stdev=0.01,
                  num_samples=10):
-        super().__init__(model, criterion)
+        super().__init__(model, criterion, tokenizer, show_progress)
         # Hyperparameters
         self.stdev = stdev
         self.num_samples = num_samples
+        self.show_progress = show_progress
 
-    def saliency_interpret(self, test_dataset):
+    def saliency_interpret(self, test_dataloader):
 
         # Convert inputs to labeled instances
-        predictions = self._get_prediction(test_dataset)
+        predictions = self._get_prediction(test_dataloader)
 
-        instances_with_grads = dict()
-        for idx, (prob, inp, tokens) in enumerate(zip(*predictions)):
+        instances_with_grads = []
+
+        iterator = tqdm(zip(*predictions), total=len(predictions[0])) \
+            if self.show_progress else zip(*predictions)
+
+        for probs, inputs, tokens in iterator:
             # Run smoothgrad
-            label = torch.argmax(prob, axis=0)
-            grads = self._smooth_grads(label, inp)
+            labels = torch.argmax(probs, dim=1)
+            grads = self._smooth_grads(labels, inputs)
 
-            # Normalize results
-            for key, grad in grads.items():
-                # TODO (@Eric-Wallace), SmoothGrad is not using times input normalization.
-                # Fine for now, but should fix for consistency.
+            # sum by embeddings (scalar for each token)
+            embedding_grads = grads.sum(dim=2)
+            # norm for each sequence
+            norms = torch.norm(embedding_grads, dim=1, p=1)
+            # normalizing
+            for i, norm in enumerate(norms):
+                embedding_grads[i] = torch.abs(embedding_grads[i]) / norm
 
-                # The [0] here is undo-ing the batching that happens in get_gradients.
-                embedding_grad = np.sum(grad[0], axis=1)
-                norm = np.linalg.norm(embedding_grad, ord=1)
-                normalized_grad = [math.fabs(e) / norm for e in embedding_grad]
-                grads[key] = normalized_grad
-
-            instances_with_grads["instance_" + str(idx + 1)] = grads
-            instances_with_grads["instance_" + str(idx + 1)]['tokens_input_1'] = [t[0] for t in tokens]
-            instances_with_grads["instance_" + str(idx + 1)]['label_input_1'] = label.item()
-            instances_with_grads["instance_" + str(idx + 1)]['prob_input_1'] = prob.max().item()
+            for i, embedding_grad in enumerate(embedding_grads):
+                example_dict = dict()
+                # as we do it by batches we has a padding so we need to remove it
+                example_tokens = [t for t in tokens[i] if t != '[PAD]']
+                example_dict['tokens'] = example_tokens
+                example_dict['grad'] = embedding_grad.cpu().tolist()[:len(example_tokens)]
+                example_dict['label'] = labels[i].item()
+                example_dict['prob'] = probs[i].max().item()
+                instances_with_grads.append(example_dict)
 
         return instances_with_grads
 
@@ -69,22 +78,18 @@ class SmoothGradient(SaliencyInterpreter):
         return handle
 
     def _smooth_grads(self, label, inp):
-        total_gradients = {}
+        total_gradients = None
         for _ in range(self.num_samples):
             handle = self._register_forward_hook(self.stdev)
             grads = self._get_gradients(label, inp)
             handle.remove()
 
             # Sum gradients
-            if total_gradients == {}:
+            if total_gradients is None:
                 total_gradients = grads
             else:
-                for key in grads.keys():
-                    total_gradients[key] += grads[key]
+                total_gradients = total_gradients + grads
 
-        # Average the gradients
-        for key in total_gradients.keys():
-            total_gradients[key] /= self.num_samples
+        total_gradients /= self.num_samples
 
         return total_gradients
-
