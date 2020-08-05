@@ -1,8 +1,6 @@
 import torch
 from torch.nn.functional import softmax
 
-from tqdm import tqdm
-
 import matplotlib
 import matplotlib.pyplot as plt
 
@@ -14,52 +12,13 @@ class SaliencyInterpreter:
                  tokenizer,
                  show_progress=True):
 
-        self.model = model
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = model.to(self.device)
         self.criterion = criterion
         self.tokenizer = tokenizer
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.show_progress = show_progress
 
-    def _get_prediction(self, test_dataloader):
-
-        model_inputs = []
-        input_tokens = []
-        predictions = []
-        model = self.model.to(self.device)
-        model.eval()
-
-        iterator = tqdm(test_dataloader) if self.show_progress else test_dataloader
-
-        # for inputs in test_dataloader:
-        for inputs in iterator:
-
-            # collecting inputs, as they will be used in _get_gradients
-            # and tokens to correspond them method output
-
-            input_ids = inputs.get('input_ids')
-            attention_mask = inputs.get("attention_mask")
-
-            tokens = [
-                self.tokenizer.convert_ids_to_tokens(input_ids_)
-                for input_ids_ in input_ids
-            ]
-            input_tokens.append(tokens)
-            model_inputs.append(inputs)
-
-            input_ids = input_ids.to(self.device)
-            attention_mask = attention_mask.to(self.device)
-
-            with torch.no_grad():
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask
-                )
-
-            predictions.append(softmax(outputs, dim=-1))
-
-        return predictions, model_inputs, input_tokens
-
-    def _get_gradients(self, label, inp):
+    def _get_gradients(self, batch):
         # set requires_grad to true for all parameters, but save original values to
         # restore them later
         original_param_name_to_requires_grad_dict = {}
@@ -69,12 +28,7 @@ class SaliencyInterpreter:
         embedding_gradients = []
         hooks = self._register_embedding_gradient_hooks(embedding_gradients)
 
-        input_ids = inp.get('input_ids').to(self.device)
-        attention_mask = inp.get("attention_mask").to(self.device)
-
-        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-        batch_losses = self.criterion(outputs, label)
-        loss = torch.mean(batch_losses)
+        loss = self.forward_step(batch)
 
         self.model.zero_grad()
         loss.backward()
@@ -127,3 +81,51 @@ class SaliencyInterpreter:
             color, "{:.2f}%".format(instance['prob']*100)
         ) + ')'
         return colored_string
+
+    def forward_step(self, batch):
+        input_ids = batch.get('input_ids').to(self.device)
+        attention_mask = batch.get("attention_mask").to(self.device)
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+
+        label = torch.argmax(outputs, dim=1)
+        batch_losses = self.criterion(outputs, label)
+        loss = torch.mean(batch_losses)
+
+        self.batch_output = [input_ids, outputs]
+
+        return loss
+
+    def update_output(self):
+
+        input_ids, outputs, grads = self.batch_output
+
+        probs = softmax(outputs, dim=-1)
+        probs, labels = torch.max(probs, dim=-1)
+
+        tokens = [
+            self.tokenizer.convert_ids_to_tokens(input_ids_)
+            for input_ids_ in input_ids
+        ]
+
+        embedding_grads = grads.sum(dim=2)
+        # norm for each sequence
+        norms = torch.norm(embedding_grads, dim=1, p=1)
+        # normalizing
+        for i, norm in enumerate(norms):
+            embedding_grads[i] = torch.abs(embedding_grads[i]) / norm
+
+        batch_output = []
+        for example_tokens, example_prob, example_grad, example_label in zip(tokens,
+                                                                             probs,
+                                                                             embedding_grads,
+                                                                             labels):
+            example_dict = dict()
+            # as we do it by batches we has a padding so we need to remove it
+            example_tokens = [t for t in example_tokens if t != '[PAD]']
+            example_dict['tokens'] = example_tokens
+            example_dict['grad'] = example_grad.cpu().tolist()[:len(example_tokens)]
+            example_dict['label'] = example_label.item()
+            example_dict['prob'] = example_prob.item()
+            batch_output.append(example_dict)
+        return batch_output
+
