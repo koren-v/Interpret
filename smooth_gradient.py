@@ -16,8 +16,9 @@ class SmoothGradient(SaliencyInterpreter):
                  tokenizer,
                  stdev=0.01,
                  num_samples=20,
-                 show_progress=True):
-        super().__init__(model, criterion, tokenizer, show_progress)
+                 show_progress=True,
+                 **kwargs):
+        super().__init__(model, criterion, tokenizer, show_progress, **kwargs)
         # Hyperparameters
         self.stdev = stdev
         self.num_samples = num_samples
@@ -50,7 +51,11 @@ class SmoothGradient(SaliencyInterpreter):
             output.add_(noise)
 
         # Register the hook
-        embedding_layer = self.model.bert.embeddings
+        encoder = self.kwargs.get("encoder")
+        if encoder:
+            embedding_layer = self.model.__getattr__(encoder).embeddings
+        else:
+            embedding_layer = self.model.bert.embeddings
         handle = embedding_layer.register_forward_hook(forward_hook)
         return handle
 

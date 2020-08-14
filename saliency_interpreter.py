@@ -12,13 +12,15 @@ class SaliencyInterpreter:
                  model,
                  criterion,
                  tokenizer,
-                 show_progress=True):
+                 show_progress=True,
+                 **kwargs):
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = model.to(self.device)
         self.criterion = criterion
         self.tokenizer = tokenizer
         self.show_progress = show_progress
+        self.kwargs = kwargs
         # to save outputs in saliency_interpret
         self.batch_output = None
 
@@ -59,7 +61,11 @@ class SaliencyInterpreter:
             embedding_gradients.append(grad_out[0])
 
         backward_hooks = []
-        embedding_layer = self.model.bert.embeddings
+        encoder = self.kwargs.get("encoder")
+        if encoder:
+            embedding_layer = self.model.__getattr__(encoder).embeddings
+        else:
+            embedding_layer = self.model.bert.embeddings
         backward_hooks.append(embedding_layer.register_backward_hook(hook_layers))
         return backward_hooks
 
