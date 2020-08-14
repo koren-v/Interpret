@@ -4,6 +4,8 @@ from torch.nn.functional import softmax
 import matplotlib
 import matplotlib.pyplot as plt
 
+SPECIAL_TOKENS = ['[CLS]', '[SEP]']
+
 
 class SaliencyInterpreter:
     def __init__(self,
@@ -17,6 +19,8 @@ class SaliencyInterpreter:
         self.criterion = criterion
         self.tokenizer = tokenizer
         self.show_progress = show_progress
+        # to save outputs in saliency_interpret
+        self.batch_output = None
 
     def _get_gradients(self, batch):
         # set requires_grad to true for all parameters, but save original values to
@@ -60,7 +64,7 @@ class SaliencyInterpreter:
         return backward_hooks
 
     @staticmethod
-    def colorize(instance, skip_special_tokens=False, special_tokens=['[CLS]', '[SEP]']):
+    def colorize(instance, skip_special_tokens=False, special_tokens=SPECIAL_TOKENS):
         word_cmap = matplotlib.cm.Blues
         prob_cmap = matplotlib.cm.Greens
         template = '<span class="barcode"; style="color: black; background-color: {}">{}</span>'
