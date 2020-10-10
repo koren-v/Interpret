@@ -4,8 +4,6 @@ from torch.nn.functional import softmax
 import matplotlib
 import matplotlib.pyplot as plt
 
-SPECIAL_TOKENS = ['[CLS]', '[SEP]']
-
 
 class SaliencyInterpreter:
     def __init__(self,
@@ -17,6 +15,7 @@ class SaliencyInterpreter:
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = model.to(self.device)
+        self.model.eval()
         self.criterion = criterion
         self.tokenizer = tokenizer
         self.show_progress = show_progress
@@ -61,16 +60,14 @@ class SaliencyInterpreter:
             embedding_gradients.append(grad_out[0])
 
         backward_hooks = []
-        encoder = self.kwargs.get("encoder")
-        if encoder:
-            embedding_layer = self.model.__getattr__(encoder).embeddings
-        else:
-            embedding_layer = self.model.bert.embeddings
+        embedding_layer = self.model.get_input_embeddings()
         backward_hooks.append(embedding_layer.register_backward_hook(hook_layers))
         return backward_hooks
 
-    @staticmethod
-    def colorize(instance, skip_special_tokens=False, special_tokens=SPECIAL_TOKENS):
+    def colorize(self, instance, skip_special_tokens=False):
+
+        special_tokens = self.tokenizer.eos_token, self.tokenizer.bos_token
+
         word_cmap = matplotlib.cm.Blues
         prob_cmap = matplotlib.cm.Greens
         template = '<span class="barcode"; style="color: black; background-color: {}">{}</span>'
@@ -82,17 +79,19 @@ class SaliencyInterpreter:
             word = word.replace("##", "") if "##" in word else ' ' + word
             color = matplotlib.colors.rgb2hex(word_cmap(color)[:3])
             colored_string += template.format(color, word)
-        colored_string += template.format(
-            0, "    Label: {} (".format(instance['label'])
-        )
+        colored_string += template.format(0, "    Label: {} |".format(instance['label']))
         prob = instance['prob']
         color = matplotlib.colors.rgb2hex(prob_cmap(prob)[:3])
-        colored_string += template.format(
-            color, "{:.2f}%".format(instance['prob']*100)
-        ) + ')'
+        colored_string += template.format(color, "{:.2f}%".format(instance['prob']*100)) + '|'
         return colored_string
 
     def forward_step(self, batch):
+        """
+        If your model receive inputs in another way or you computing not
+         like in this example simply override this method. It should return the batch loss
+        :param batch: batch returned by dataloader
+        :return: torch.Tensor: batch loss
+        """
         input_ids = batch.get('input_ids').to(self.device)
         attention_mask = batch.get("attention_mask").to(self.device)
         outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
@@ -106,6 +105,11 @@ class SaliencyInterpreter:
         return loss
 
     def update_output(self):
+        """
+        You can also override this method if you want to change the format
+         of outputs. (e.g. store just gradients)
+        :return: batch_output
+        """
 
         input_ids, outputs, grads = self.batch_output
 
@@ -125,13 +129,13 @@ class SaliencyInterpreter:
             embedding_grads[i] = torch.abs(embedding_grads[i]) / norm
 
         batch_output = []
-        for example_tokens, example_prob, example_grad, example_label in zip(tokens,
-                                                                             probs,
-                                                                             embedding_grads,
-                                                                             labels):
+
+        iterator = zip(tokens, probs, embedding_grads, labels)
+
+        for example_tokens, example_prob, example_grad, example_label in iterator:
             example_dict = dict()
             # as we do it by batches we has a padding so we need to remove it
-            example_tokens = [t for t in example_tokens if t != '[PAD]']
+            example_tokens = [t for t in example_tokens if t != self.tokenizer.pad_token]
             example_dict['tokens'] = example_tokens
             example_dict['grad'] = example_grad.cpu().tolist()[:len(example_tokens)]
             example_dict['label'] = example_label.item()

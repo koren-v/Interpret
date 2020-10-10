@@ -29,6 +29,10 @@ class SmoothGradient(SaliencyInterpreter):
         iterator = tqdm(test_dataloader) if self.show_progress else test_dataloader
 
         for batch in iterator:
+
+            # we will store there batch outputs such as gradients, probability, tokens
+            # so as each of them are used in different places, for convenience we will create
+            # it as attribute:
             self.batch_output = []
             self._smooth_grads(batch)
             batch_output = self.update_output()
@@ -51,11 +55,7 @@ class SmoothGradient(SaliencyInterpreter):
             output.add_(noise)
 
         # Register the hook
-        encoder = self.kwargs.get("encoder")
-        if encoder:
-            embedding_layer = self.model.__getattr__(encoder).embeddings
-        else:
-            embedding_layer = self.model.bert.embeddings
+        embedding_layer = self.model.get_input_embeddings()
         handle = embedding_layer.register_forward_hook(forward_hook)
         return handle
 

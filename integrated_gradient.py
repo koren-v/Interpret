@@ -27,6 +27,9 @@ class IntegratedGradient(SaliencyInterpreter):
 
         for batch in iterator:
 
+            # we will store there batch outputs such as gradients, probability, tokens
+            # so as each of them are used in different places, for convenience we will create
+            # it as attribute:
             self.batch_output = []
             self._integrate_gradients(batch)
             batch_output = self.update_output()
@@ -50,12 +53,7 @@ class IntegratedGradient(SaliencyInterpreter):
             # Scale the embedding by alpha
             output.mul_(alpha)
 
-        # Register the hook
-        encoder = self.kwargs.get("encoder")
-        if encoder:
-            embedding_layer = self.model.__getattr__(encoder).embeddings
-        else:
-            embedding_layer = self.model.bert.embeddings
+        embedding_layer = self.model.get_input_embeddings()
         handle = embedding_layer.register_forward_hook(forward_hook)
         return handle
 
@@ -90,4 +88,3 @@ class IntegratedGradient(SaliencyInterpreter):
         ig_grads *= embeddings_list[0]
 
         self.batch_output.append(ig_grads)
-
