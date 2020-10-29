@@ -72,12 +72,14 @@ class SaliencyInterpreter:
         prob_cmap = matplotlib.cm.Greens
         template = '<span class="barcode"; style="color: black; background-color: {}">{}</span>'
         colored_string = ''
-        for word, color in zip(instance['tokens'], instance['grad']):
+        # Use a matplotlib normalizer in order to make clearer the difference between values
+        normalized_and_mapped = matplotlib.cm.ScalarMappable(cmap=word_cmap).to_rgba(instance['grad'])
+        for word, color in zip(instance['tokens'], normalized_and_mapped):
             if word in special_tokens and skip_special_tokens:
                 continue
             # handle wordpieces
             word = word.replace("##", "") if "##" in word else ' ' + word
-            color = matplotlib.colors.rgb2hex(word_cmap(color)[:3])
+            color = matplotlib.colors.rgb2hex(color[:3])
             colored_string += template.format(color, word)
         colored_string += template.format(0, "    Label: {} |".format(instance['label']))
         prob = instance['prob']
