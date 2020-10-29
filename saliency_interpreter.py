@@ -13,6 +13,16 @@ class SaliencyInterpreter:
                  show_progress=True,
                  **kwargs):
 
+        """
+        :param model: nn.Module object - can be HuggingFace's model or custom one.
+        :param criterion: torch criterion used to train your model.
+        :param tokenizer: HuggingFace's tokenizer.
+        :param show_progress: bool flag to show tqdm progress bar.
+        :param kwargs:
+            encoder: string indicates the HuggingFace's encoder, that has 'embeddings' attribute. Used
+                if your model doesn't have 'get_input_embeddings' method to get access to encoder embeddings
+        """
+
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = model.to(self.device)
         self.model.eval()
@@ -60,30 +70,56 @@ class SaliencyInterpreter:
             embedding_gradients.append(grad_out[0])
 
         backward_hooks = []
-        embedding_layer = self.model.get_input_embeddings()
+        embedding_layer = self.get_embeddings_layer()
         backward_hooks.append(embedding_layer.register_backward_hook(hook_layers))
         return backward_hooks
 
+    def get_embeddings_layer(self):
+        if hasattr(self.model, "get_input_embeddings"):
+            embedding_layer = self.model.get_input_embeddings()
+        else:
+            encoder_attribute = self.kwargs.get("encoder")
+            assert encoder_attribute, "Your model doesn't have 'get_input_embeddings' method, thus you " \
+                "have provide 'encoder' key argument while initializing SaliencyInterpreter object"
+            embedding_layer = getattr(self.model, encoder_attribute).embeddings
+        return embedding_layer
+
     def colorize(self, instance, skip_special_tokens=False):
 
-        special_tokens = self.tokenizer.eos_token, self.tokenizer.bos_token
+        special_tokens = self.special_tokens
 
         word_cmap = matplotlib.cm.Blues
         prob_cmap = matplotlib.cm.Greens
         template = '<span class="barcode"; style="color: black; background-color: {}">{}</span>'
         colored_string = ''
-        for word, color in zip(instance['tokens'], instance['grad']):
+        # Use a matplotlib normalizer in order to make clearer the difference between values
+        normalized_and_mapped = matplotlib.cm.ScalarMappable(cmap=word_cmap).to_rgba(instance['grad'])
+        for word, color in zip(instance['tokens'], normalized_and_mapped):
             if word in special_tokens and skip_special_tokens:
                 continue
             # handle wordpieces
             word = word.replace("##", "") if "##" in word else ' ' + word
-            color = matplotlib.colors.rgb2hex(word_cmap(color)[:3])
+            color = matplotlib.colors.rgb2hex(color[:3])
             colored_string += template.format(color, word)
         colored_string += template.format(0, "    Label: {} |".format(instance['label']))
         prob = instance['prob']
         color = matplotlib.colors.rgb2hex(prob_cmap(prob)[:3])
         colored_string += template.format(color, "{:.2f}%".format(instance['prob']*100)) + '|'
         return colored_string
+
+    @property
+    def special_tokens(self):
+        """
+        Some tokenizers don't have 'eos_token' and 'bos_token' attributes.
+        So needed we some trick to get them.
+        """
+        if self.tokenizer.bos_token is None or self.tokenizer.eos_token is None:
+            special_tokens = self.tokenizer.build_inputs_with_special_tokens([])
+            special_tokens_ids = self.tokenizer.convert_ids_to_tokens(special_tokens)
+            self.tokenizer.bos_token, self.tokenizer.eos_token = special_tokens_ids
+
+        special_tokens = self.tokenizer.eos_token, self.tokenizer.bos_token
+        return special_tokens
 
     def forward_step(self, batch):
         """
@@ -142,4 +178,3 @@ class SaliencyInterpreter:
             example_dict['prob'] = example_prob.item()
             batch_output.append(example_dict)
         return batch_output
-

@@ -55,7 +55,7 @@ class SmoothGradient(SaliencyInterpreter):
             output.add_(noise)
 
         # Register the hook
-        embedding_layer = self.model.get_input_embeddings()
+        embedding_layer = self.get_embeddings_layer()
         handle = embedding_layer.register_forward_hook(forward_hook)
         return handle
 
